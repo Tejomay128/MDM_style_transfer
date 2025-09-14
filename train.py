@@ -19,7 +19,6 @@ def get_args():
     parser.add_argument("--pretrain_path", type=str, default="", help="path to the model's pre-trained weights")
     parser.add_argument("--training_mode", type=str, default='diff', help="training mode, one of ['diff', 'ar']")
     parser.add_argument("--tokenizer_path", type=str, default="", help="path to the tokenizer, either huggingface config name or path to the tokenizer")
-    parser.add_argument("--compile", action='store_true', default=False, help="use torch.compile")
     parser.add_argument("--data_dir", type=str, default="", help="path to the dataset directory")
     parser.add_argument("--processed_data_dir", type=str, default="", help="path to the processed dataset")
     parser.add_argument("--data_name", type=str, default="", help="name of the data")
@@ -111,7 +110,6 @@ def main():
         pretrain_path=args.pretrain_path,
         training_mode=args.training_mode,
         tokenizer_path=args.tokenizer_path,
-        compile_model=args.compile,
         tokenizer=tokenizer,
         epsilon=args.epsilon,
         cfg=args.cfg,

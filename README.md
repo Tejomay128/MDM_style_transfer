@@ -5,7 +5,7 @@ The code is based on PyTorch, `xformers`, and Flash attention. Follow the below 
 ```sh 
 pip install xformers==0.0.29.post3
 ```
-This auto-downloads the required PyTorch version as well
+Installing xformers auto-installs the required PyTorch version as well
 ```sh 
 pip install transformers==4.52.1
 ```

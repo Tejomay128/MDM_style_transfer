@@ -1,4 +1,4 @@
-Codebase for [*Improving Text Style Transfer using Masked Diffusion Language Models with Inference-time Scaling*](https://arxiv.org/abs/2508.10995)
+## Codebase for [*Improving Text Style Transfer using Masked Diffusion Language Models with Inference-time Scaling*](https://arxiv.org/abs/2508.10995)
 
 ## Setup:
 The code is based on PyTorch, `xformers`, and Flash attention. Follow the below steps to setup the conda environment:

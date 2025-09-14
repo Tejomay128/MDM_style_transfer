@@ -26,7 +26,6 @@ class MaskedDiffusionTrainer:
             pretrain_path,
             training_mode,
             tokenizer_path,
-            compile_model,
             tokenizer,
             epsilon,
             cfg,
@@ -49,17 +48,18 @@ class MaskedDiffusionTrainer:
         """
         Args:
             model_name: name of the model used to fetch the architecture config
+            use_pretrained: whether to use pre-trained model weights during initialization or not
             pretrain_path: path to the model's pre-trained weights
             training_mode: ar (for autoregressive LM training) or diff (for masked diffusion LM training)
-            compile_model: whether to compile the model
             tokenizer: tokenizer used for tokenization
-            epsilon: min value of difference between t=1 and t=t_max
+            epsilon: min amount of noise to be added in the forward process
             cfg: condition drop ratio for classifier free guidance
             lr: learning rate
+            min_lr: minimum value upto which learning rate can decay
             max_length: maximum length of the sequence
             weight_decay: weight decay regularization parameter
             warmup_steps: number of warmup steps
-            clip_grad_norm: gradient clipping
+            clip_grad_norm: gradient norm clipping max value
             batch_size: batch size
             num_epochs: number of epochs
             eval_every: eval every
@@ -73,7 +73,6 @@ class MaskedDiffusionTrainer:
         self.pretrain_path = pretrain_path
         self.use_pretrained = use_pretrained
         self.training_mode = training_mode
-        self.compile_model = compile_model
         self.tokenizer = tokenizer
         self.epsilon = epsilon
         self.cfg = cfg
@@ -100,6 +99,7 @@ class MaskedDiffusionTrainer:
         self.vocab_size = self.tokenizer.vocab_size
         self.mask_id = 32000
 
+        # Initialize
         if self.training_mode == 'diff':
             config = TransEncoderConfig.from_name(model_name)
         elif self.training_mode == 'ar':
@@ -118,10 +118,13 @@ class MaskedDiffusionTrainer:
         if self.training_mode == 'diff':
             self.model = TransEncoder(config).to(device)
             self.loss_fn = CrossEntropyLoss(reduction='none')
+            # Keep track of the exponential moving average of the weights during training
             self.ema = ExponentialMovingAverage(self.model.parameters(), decay=0.999)
+            
         elif self.training_mode == 'ar':
             self.model = GPT(config).to(device)
             self.loss_fn = CrossEntropyLoss()
+            
         else:
             raise NotImplementedError
         
@@ -140,10 +143,6 @@ class MaskedDiffusionTrainer:
             num_params += param.numel()
         print(f'Number of parameters: {(num_params / 1e6): .2f}M')
 
-        if self.compile_model:
-            print('Compiling model...')
-            self.model = torch.compile(self.model)
-
         self.optim = torch.optim.AdamW(
             self.model.parameters(),
             lr=self.lr, 
@@ -153,6 +152,9 @@ class MaskedDiffusionTrainer:
 
 
     def _adjust_lr(self, step):
+        """
+        Implements an inverse square root scheduler with warmup for the learning rate.
+        """
         if step <= self.warmup_steps:
             lr = self.lr * step / self.warmup_steps
         else:
@@ -166,7 +168,10 @@ class MaskedDiffusionTrainer:
 
     def forward_process(self, batch):
         """
-        Forward process for masked diffusion training.
+        Forward diffusion process for masked diffusion training.
+        Returns:
+            noisy_batch: Partially masked sequence
+            p_mask: proportion of masking
         """
         b, l = batch.shape
         t = torch.rand((b,), device=batch.device)
@@ -212,7 +217,9 @@ class MaskedDiffusionTrainer:
 
     def _diff_step(self, data, mode='train'):
         """
-        One training step of masked diffusion training.
+        One training step of masked diffusion training. First computes a noisy batch and
+        passes it through the neural network. The cross entropy loss is then computed on the 
+        masked positions in the noisy batch.
         """
         assert mode in ['train', 'eval']
 
@@ -226,11 +233,14 @@ class MaskedDiffusionTrainer:
         prompt_index = (temp_tensor < prompt_length.unsqueeze(1))
         noisy_input[prompt_index] = input_ids[prompt_index].clone()
         mask_indices = (noisy_input == self.mask_id)
-        # CFG drop
+        
+        # Randomly drops the conditional sequence by completely masking it out (Randomness determined by self.cfg)
+        # See classifier-free guidance paper: https://arxiv.org/abs/2207.12598 and
+        # scaling MDMs paper: https://openreview.net/forum?id=WNvvwK0tut
         if  mode == 'train' and torch.rand(1) < self.cfg:
             noisy_input[prompt_index] = self.mask_id
 
-        with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+        with torch.amp.autocast('cuda', dtype=torch.bfloat16):  # training with bfloat16 precision
             logits = self.model(noisy_input)
             loss = self.loss_fn(logits[mask_indices], input_ids[mask_indices]) / p_mask[mask_indices]
             loss = loss.sum() / (input_ids.shape[0] * self.max_length - prompt_length.sum())
@@ -249,8 +259,12 @@ class MaskedDiffusionTrainer:
             for data in tqdm(train_loader, desc='Epoch {}'.format(i+1)):
                 steps += 1
                 curr_lr = self._adjust_lr(steps)
+
+                # Run a training step for autoregressive LM training
                 if self.training_mode == 'ar':
                     loss = self._ar_step(data)
+
+                # Run a training step for masked diffusion training
                 elif self.training_mode == 'diff':
                     loss = self._diff_step(data)   
                 else:
@@ -296,6 +310,9 @@ class MaskedDiffusionTrainer:
 
 
     def _save(self, step):
+        """
+        Saves a checkpoint of the model weights and ema weights.
+        """
         print("Saving model at step {}...".format(step))
         model_state_dict = self.model.state_dict()
         ema_state_dict = {}
